@@ -1,3 +1,47 @@
+/* ==================== MIKO ANIME APP.JS ==================== */
+
+/* ==================== AUTO SLIDE ==================== */
+function startAutoSlide() {
+  stopAutoSlide();
+  autoSlideTimer = setInterval(function() {
+    if (typeof nextTopSlide === "function") nextTopSlide();
+  }, 5000);
+}
+function stopAutoSlide() {
+  if (autoSlideTimer) { clearInterval(autoSlideTimer); autoSlideTimer = null; }
+}
+
+/* ==================== URL ROUTING ==================== */
+function handleUrlRouting() {
+  var path = window.location.pathname;
+  var parts = path.split("/").filter(Boolean);
+  if (parts[0] === "anime" && parts[1]) {
+    currentAnimeSlug = decodeURIComponent(parts[1]);
+    if (parts[2] && parts[2].startsWith("eps")) {
+      currentEpisode = Number(parts[2].replace("eps", "")) || 1;
+      watchOpen = true;
+      currentTab = "detail";
+    } else {
+      currentTab = "detail";
+    }
+    return true;
+  }
+  if (parts[0] === "profil" && parts[1]) {
+    currentPublicUser = getPublicUser(decodeURIComponent(parts[1]));
+    currentTab = "public-profile";
+    return true;
+  }
+  return false;
+}
+
+function updateUrl(slug, ep) {
+  if (!slug) return;
+  var newPath = ep ? "/anime/" + slug + "/eps" + ep : "/anime/" + slug;
+  if (window.location.pathname !== newPath) {
+    history.pushState({ slug: slug, ep: ep }, "", newPath);
+  }
+}
+
 /* ==================== GLOBAL STATE ==================== */
 let animeList = [];
 let historyList = [];
@@ -38,45 +82,45 @@ let currentClanTab = "my";
 let selectedClanLogo = "shield";
 let selectedClanColor = "#a855f7";
 let editClanOpen = true;
-
 let commentOverlayInterval = null;
-let commentOverlayActive = true;
+let commentOverlayActive = false;
 let holdTimer = null;
 let isFakeFullscreen = false;
 
-/* ==================== HELPER: HITUNG HARI ==================== */
+/* ==================== HELPER ==================== */
 function calculateJoinDays(u) {
   if (!u) return 0;
   if (u.createdAt) {
     var d = new Date(u.createdAt);
-    if (!isNaN(d.getTime())) {
-      var diffMs = Date.now() - d.getTime();
-      var days = Math.floor(diffMs / 86400000);
-      return Math.max(1, days);
-    }
+    if (!isNaN(d.getTime())) return Math.max(1, Math.floor((Date.now() - d.getTime()) / 86400000));
   }
   if (u.joinedAt) {
     var d2 = new Date(u.joinedAt);
-    if (!isNaN(d2.getTime())) {
-      var diffMs2 = Date.now() - d2.getTime();
-      var days2 = Math.floor(diffMs2 / 86400000);
-      return Math.max(1, days2);
-    }
+    if (!isNaN(d2.getTime())) return Math.max(1, Math.floor((Date.now() - d2.getTime()) / 86400000));
   }
-  var months = Number(u.joinedMonths) || 0;
-  return Math.max(1, months * 30);
+  return Math.max(1, (Number(u.joinedMonths) || 0) * 30);
 }
-
-function formatJoinDays(days) {
-  return days + "D";
-}
-
+function formatJoinDays(days) { return days + "D"; }
 function getClanColorForUser(u) {
   if (!u) return "";
   var clanName = u.clanName || "";
   if (!clanName) return "";
   var clanObj = clanList.find(function(c) { return c.id === u.clanId || c.name === clanName; });
   return clanObj ? clanObj.color : (typeof generateClanColor === "function" ? generateClanColor(clanName) : "#a855f7");
+}
+
+/* ==================== NEW ANIME (khusus badge NEW) ==================== */
+function getNewAnime() {
+  return animeList.filter(function(a) { return a.isNew !== false; });
+}
+
+/* ==================== ANIME POPULER (semua anime, sort views + rating) ==================== */
+function getPopularAnime() {
+  return animeList.slice().sort(function(a, b) {
+    var scoreA = (Number(a.views) || 0) / 1000 + (Number(a.rating) || 0) * 100;
+    var scoreB = (Number(b.views) || 0) / 1000 + (Number(b.rating) || 0) * 100;
+    return scoreB - scoreA;
+  });
 }
 
 /* ==================== LOAD ALL DATA ==================== */
@@ -110,8 +154,9 @@ async function loadAllData() {
         genres: a.genres || a.genre || [], synopsis: a.synopsis || a.sinopsis || "",
         status: a.status || "ongoing", updateDay: a.updateDay || a["hari update"] || "Senin",
         updateTime: a.updateTime || a["waktu update"] || "",
-        completed: a.completed === true,
-        isNew: a.isNew !== false
+        completed: a.completed === true, isNew: a.isNew !== false,
+        franchise: a.franchise || "",
+        intro: a.intro || null
       };
     });
 
@@ -133,8 +178,7 @@ async function loadAllData() {
         badges: u.badges || u.lencana || [], isDefault: u.isDefault || false,
         bannerUrl: u.bannerUrl || "", bannerType: u.bannerType || "",
         clanId: u.clanId || "", clanName: u.clanName || "",
-        isPremium: u.isPremium === true,
-        isAdmin: u.isAdmin === true,
+        isPremium: u.isPremium === true, isAdmin: u.isAdmin === true,
         verified: u.verified || ""
       };
     });
@@ -226,7 +270,18 @@ async function loadAllData() {
 }
 
 /* ==================== HELPERS ==================== */
-function getAnimeBySlug(slug) { return animeList.find(function(a) { return a.slug === slug; }); }
+function getAnimeBySlug(slug) {
+  if (!slug) return null;
+  var target = String(slug).toLowerCase().trim();
+  var exact = animeList.find(function(a) {
+    return String(a.slug || a.id).toLowerCase().trim() === target;
+  });
+  if (exact) return exact;
+  return animeList.find(function(a) {
+    return String(a.id).toLowerCase().trim() === target;
+  }) || null;
+}
+
 function isFavorited(slug) { return favoriteList.some(function(f) { return f.animeSlug === slug; }); }
 
 function getPublicUser(username) {
@@ -245,9 +300,7 @@ function getPublicUser(username) {
 }
 
 function getCommentsByEpisode(slug, ep) {
-  if (typeof currentComments !== "undefined" && Array.isArray(currentComments)) {
-    return currentComments;
-  }
+  if (typeof currentComments !== "undefined" && Array.isArray(currentComments)) return currentComments;
   if (!slug || !ep) return [];
   return dummyComments.filter(function(c) {
     return String(c.animeSlug) === String(slug) && Number(c.episode) === Number(ep);
@@ -264,12 +317,13 @@ function isIframeVideo(url) {
 }
 
 function unlockScroll() {
-  document.querySelectorAll(".afinitas-page, .watch-page, .clan-page").forEach(function(el) {
+  document.querySelectorAll(".afinitas-page, .watch-page, .clan-page, .chat-page-full").forEach(function(el) {
     if (el && el.parentNode) el.parentNode.removeChild(el);
   });
   document.body.style.overflow = "";
   document.body.style.position = "";
   document.body.style.height = "";
+  document.body.style.width = "";
   document.documentElement.style.overflow = "";
   document.body.classList.remove("body-fake-fullscreen");
 }
@@ -493,9 +547,16 @@ function switchTab(tab) {
   currentTab = tab;
   watchOpen = false;
   stopAutoSlide();
+  var nav = document.getElementById("bottom-nav");
+  var mh = document.getElementById("mini-header");
+  if (nav) nav.style.display = "flex";
+  if (mh && tab !== "home") mh.style.display = "none";
   document.querySelectorAll(".nav-item").forEach(function(b) {
     b.classList.toggle("active", b.dataset.tab === tab);
   });
+  if (tab === "home" && window.location.pathname !== "/") {
+    history.pushState({}, "", "/");
+  }
   renderPage();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
@@ -503,42 +564,54 @@ function switchTab(tab) {
 function renderPage() {
   var main = document.getElementById("app-main");
   var nav = document.getElementById("bottom-nav");
-  var miniHeader = document.getElementById("mini-header");
+  var mh = document.getElementById("mini-header");
   if (!main) return;
   main.innerHTML = "";
-  if (miniHeader) miniHeader.style.display = "none";
+  if (currentTab === "global-chat") {
+    if (nav) nav.style.display = "none";
+    if (mh) mh.style.display = "none";
+    if (typeof renderGlobalChat === "function") renderGlobalChat(main);
+    return;
+  }
+  if (mh && currentTab !== "home") mh.style.display = "none";
+  if (nav) nav.style.display = "flex";
   if (watchOpen) {
     if (nav) nav.style.display = "none";
     renderWatch(main);
     return;
   }
-  if (nav) nav.style.display = "flex";
-  if (currentTab === "home") { renderMiniHeader(); renderHome(main); }
-  else if (currentTab === "search") renderSearch(main);
-  else if (currentTab === "jadwal") renderJadwal(main);
-  else if (currentTab === "favorit") renderFavorit(main);
-  else if (currentTab === "riwayat") renderRiwayat(main);
-  else if (currentTab === "profil") renderProfil(main);
-  else if (currentTab === "notifikasi") renderNotifikasi(main);
-  else if (currentTab === "premium") renderPremium(main);
-  else if (currentTab === "diskusi") renderGlobalChat(main);
-  else if (currentTab === "peliharaan") renderPeliharaan(main);
-  else if (currentTab === "afinitas") renderAfinitas(main);
-  else if (currentTab === "public-profile") renderPublicProfile(main);
-  else if (currentTab === "detail") renderDetail(main);
-  else if (currentTab === "clan") renderClanPage(main);
-  else if (currentTab === "settings") renderSettings(main);
-  else if (currentTab === "leaderboard") renderLeaderboard(main);
+  try {
+    if (currentTab === "home") { renderMiniHeader(); renderHome(main); }
+    else if (currentTab === "search") renderSearch(main);
+    else if (currentTab === "jadwal") renderJadwal(main);
+    else if (currentTab === "favorit") renderFavorit(main);
+    else if (currentTab === "riwayat") renderRiwayat(main);
+    else if (currentTab === "profil") renderProfil(main);
+    else if (currentTab === "notifikasi") renderNotifikasi(main);
+    else if (currentTab === "premium") renderPremium(main);
+    else if (currentTab === "diskusi" && typeof renderGlobalChat === "function") renderGlobalChat(main);
+    else if (currentTab === "peliharaan" && typeof renderPeliharaan === "function") renderPeliharaan(main);
+    else if (currentTab === "afinitas" && typeof renderAfinitas === "function") renderAfinitas(main);
+    else if (currentTab === "public-profile" && typeof renderPublicProfile === "function") renderPublicProfile(main);
+    else if (currentTab === "detail") renderDetail(main);
+    else if (currentTab === "clan" && typeof renderClanPage === "function") renderClanPage(main);
+    else if (currentTab === "settings" && typeof renderSettings === "function") renderSettings(main);
+    else if (currentTab === "leaderboard" && typeof renderLeaderboard === "function") renderLeaderboard(main);
+    else if (currentTab === "popular") renderPopular(main);
+  } catch (e) {
+    console.error("Render error:", e);
+    main.innerHTML = '<p style="padding:40px;text-align:center;color:white;">Error: ' + e.message + '</p>';
+  }
   setTimeout(forceBannerAutoplay, 200);
 }
 
 /* ==================== MINI HEADER ==================== */
 function renderMiniHeader() {
-  var miniHeader = document.getElementById("mini-header");
-  if (!miniHeader) return;
+  var mh = document.getElementById("mini-header");
+  if (!mh) return;
   var readList = window.__notifRead || [];
   var unreadCount = notificationsList.filter(function(n) { return readList.indexOf(n.id) === -1; }).length;
-  miniHeader.innerHTML =
+  mh.innerHTML =
     '<div class="mini-logo">' +
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ico-18"><polygon points="6 3 20 12 6 21 6 3"/></svg>' +
     '<span>MikoAnime</span>' +
@@ -547,7 +620,7 @@ function renderMiniHeader() {
     '<button class="mini-icon-btn" onclick="openSearch()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></button>' +
     '<button class="mini-icon-btn" onclick="openNotifikasi()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>' + (unreadCount > 0 ? '<span class="mini-badge">' + unreadCount + '</span>' : "") + '</button>' +
     '</div>';
-  miniHeader.style.display = "flex";
+  mh.style.display = "flex";
 }
 
 function pageHeaderHTML(title, backFn) {
@@ -604,22 +677,12 @@ function renderTopSlideContent(type) {
     var sorted = allUsers.slice().sort(function(a, b) { return calculateJoinDays(b) - calculateJoinDays(a); });
     data = sorted.slice(0, 5).map(function(u, i) {
       var days = calculateJoinDays(u);
-      return {
-        rank: i + 1, userId: u.userId, username: u.username, avatar: u.avatar,
-        level: u.level, clanName: u.clanName, clanId: u.clanId,
-        isPremium: u.isPremium, verified: u.verified,
-        score: formatJoinDays(days)
-      };
+      return { rank: i + 1, userId: u.userId, username: u.username, avatar: u.avatar, level: u.level, clanName: u.clanName, clanId: u.clanId, isPremium: u.isPremium, verified: u.verified, score: formatJoinDays(days) };
     });
   } else if (type === "level") {
     var sorted2 = allUsers.slice().sort(function(a, b) { return (b.level || 0) - (a.level || 0); });
     data = sorted2.slice(0, 5).map(function(u, i) {
-      return {
-        rank: i + 1, userId: u.userId, username: u.username, avatar: u.avatar,
-        level: u.level, clanName: u.clanName, clanId: u.clanId,
-        isPremium: u.isPremium, verified: u.verified,
-        score: "Lvl " + (u.level || 1)
-      };
+      return { rank: i + 1, userId: u.userId, username: u.username, avatar: u.avatar, level: u.level, clanName: u.clanName, clanId: u.clanId, isPremium: u.isPremium, verified: u.verified, score: "Lvl " + (u.level || 1) };
     });
   } else if (type === "rank") {
     var rankOrder = { "Mythic": 1000, "Legend": 900, "Grandmaster": 800, "Master": 700, "Diamond": 600, "Platinum": 500, "Gold": 400, "Silver": 300, "Bronze": 200, "Rookie": 100 };
@@ -630,12 +693,7 @@ function renderTopSlideContent(type) {
       return (b.xp || 0) - (a.xp || 0);
     });
     data = sorted3.slice(0, 5).map(function(u, i) {
-      return {
-        rank: i + 1, userId: u.userId, username: u.username, avatar: u.avatar,
-        level: u.level, clanName: u.clanName, clanId: u.clanId,
-        isPremium: u.isPremium, verified: u.verified,
-        score: u.rank || "Rookie"
-      };
+      return { rank: i + 1, userId: u.userId, username: u.username, avatar: u.avatar, level: u.level, clanName: u.clanName, clanId: u.clanId, isPremium: u.isPremium, verified: u.verified, score: u.rank || "Rookie" };
     });
   } else if (type === "clan") {
     data = clanList.map(function(c) {
@@ -651,6 +709,9 @@ function renderTopSlideContent(type) {
   return '<div onclick="openLeaderboard(\'' + type + '\')" style="cursor:pointer;">' +
     '<div class="giveaway-list-custom">' +
     data.map(function(item) { return renderGiveawayRow(item); }).join("") +
+    '</div>' +
+    '<div style="text-align:center;margin-top:10px;font-size:11px;font-weight:600;color:var(--accent-2);display:flex;align-items:center;justify-content:center;gap:4px;">' +
+    'Lihat Selengkapnya ' + icons.chevronRight +
     '</div>' +
     '</div>';
 }
@@ -714,9 +775,6 @@ function updateTopTitle(index) {
   if (el) el.innerHTML = t.icon() + '<span>' + t.text + '</span>';
 }
 
-function startAutoSlide() { stopAutoSlide(); autoSlideTimer = setInterval(function() { nextTopSlide(); }, 5000); }
-function stopAutoSlide() { if (autoSlideTimer) { clearInterval(autoSlideTimer); autoSlideTimer = null; } }
-
 function initSwipe() {
   var slider = document.getElementById("top-slider");
   if (!slider) return;
@@ -743,6 +801,9 @@ function initSwipe() {
 /* ==================== HOME ==================== */
 function renderHome(main) {
   renderMiniHeader();
+  var newAnimeList = getNewAnime();
+  var popularAnime = getPopularAnime();
+
   main.innerHTML =
     topCarouselHTML() +
     premiumBarHTML() +
@@ -772,10 +833,20 @@ function renderHome(main) {
     '<a class="section-link" onclick="switchTab(\'jadwal\')">Lihat Jadwal ' + icons.chevronRight + '</a>' +
     '</div>' +
     '<div class="anime-grid-3">' +
-    (animeList.length > 0 ? animeList.slice(0, 6).map(animeCardHTML).join("") : '<p style="color:var(--text-mute);font-size:12px;grid-column:1/-1;text-align:center;padding:20px 0;">Belum ada anime</p>') +
+    (newAnimeList.length > 0
+      ? newAnimeList.slice(0, 9).map(animeCardHTML).join("")
+      : '<p style="color:var(--text-mute);font-size:12px;grid-column:1/-1;text-align:center;padding:20px 0;">Belum ada anime baru</p>') +
     '</div>' +
     '</section>' +
-    (animeList.length > 6 ? '<section class="section fade-up"><div class="anime-grid-3">' + animeList.slice(6, 12).map(animeCardHTML).join("") + '</div></section>' : "");
+    (popularAnime.length > 0 ? '<section class="section fade-up">' +
+      '<div class="section-head">' +
+      '<h2 class="section-title">Anime Populer</h2>' +
+      '<a class="section-link" onclick="openPopularPage()">Selengkapnya ' + icons.chevronRight + '</a>' +
+      '</div>' +
+      '<div class="anime-grid-3">' +
+      popularAnime.slice(0, 9).map(animeCardHTML).join("") +
+      '</div>' +
+      '</section>' : "");
   setTimeout(function() { initSwipe(); startAutoSlide(); }, 100);
 }
 
@@ -819,6 +890,32 @@ function toggleFav(slug) {
   }
   saveFavorites();
   renderPage();
+}
+
+/* ==================== HALAMAN ANIME POPULER ==================== */
+function openPopularPage() {
+  unlockScroll();
+  exitFakeFullscreen();
+  watchFromTab = currentTab;
+  currentTab = "popular";
+  watchOpen = false;
+  stopAutoSlide();
+  document.querySelectorAll(".nav-item").forEach(function(b) { b.classList.remove("active"); });
+  renderPage();
+  window.scrollTo({ top: 0 });
+}
+
+function renderPopular(main) {
+  var sorted = getPopularAnime();
+  main.innerHTML =
+    '<div class="page-header fade-up" style="padding-top:20px;">' +
+    '<button class="page-back" onclick="switchTab(\'home\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg></button>' +
+    '<div class="page-header-title">Anime Populer</div>' +
+    '</div>' +
+    '<p style="font-size:12px;color:var(--text-mute);margin-bottom:14px;">' + sorted.length + ' anime paling populer</p>' +
+    (sorted.length === 0
+      ? '<p style="text-align:center;color:var(--text-mute);padding:40px 0;">Belum ada anime</p>'
+      : '<div class="anime-grid-3 fade-up d1">' + sorted.map(animeCardHTML).join("") + '</div>');
 }
 
 /* ==================== SEARCH ==================== */
@@ -988,6 +1085,7 @@ function openAnime(slug) {
   currentTab = "detail";
   watchOpen = false;
   stopAutoSlide();
+  if (typeof updateUrl === "function") updateUrl(slug);
   document.querySelectorAll(".nav-item").forEach(function(b) { b.classList.remove("active"); });
   renderPage();
   window.scrollTo({ top: 0 });
@@ -999,14 +1097,16 @@ function openWatch(slug, episode) {
   watchFromTab = currentTab;
   currentAnimeSlug = slug;
   currentEpisode = Number(episode) || 1;
+  window.currentEpisode = currentEpisode;
   watchOpen = true;
   stopAutoSlide();
+  if (typeof updateUrl === "function") updateUrl(slug, currentEpisode);
   renderPage();
   window.scrollTo({ top: 0 });
 }
 
 function closeWatch() {
-  stopCommentOverlay();
+  if (typeof stopCommentOverlay === "function") stopCommentOverlay();
   if (typeof stopListenComments === "function") stopListenComments();
   exitFakeFullscreen();
   var v = document.getElementById("video-player");
@@ -1028,15 +1128,24 @@ function closeWatch() {
   }
   watchOpen = false;
   unlockScroll();
+  if (typeof updateUrl === "function" && currentAnimeSlug) updateUrl(currentAnimeSlug);
   renderPage();
   window.scrollTo({ top: 0 });
 }
 
 /* ==================== RENDER WATCH ==================== */
 async function renderWatch(main) {
-  var anime = getAnimeBySlug(currentAnimeSlug) || animeList[0];
-  if (!anime) { switchTab("home"); return; }
+  var anime = getAnimeBySlug(currentAnimeSlug);
+  if (!anime) {
+    console.error("❌ Anime gak ketemu:", currentAnimeSlug);
+    showToast("Anime gak ditemukan");
+    currentTab = "home";
+    watchOpen = false;
+    renderPage();
+    return;
+  }
   var ep = currentEpisode;
+  window.currentEpisode = ep;
   var fav = isFavorited(anime.slug);
 
   showLoading("Memuat episode...");
@@ -1045,7 +1154,7 @@ async function renderWatch(main) {
   hideLoading();
 
   var currentEpData = episodes.find(function(e) { return Number(e.id) === ep; });
-  var videoUrl = (currentEpData && currentEpData.videoUrl) || getVideoUrlForEpisode(anime.slug, ep);
+  var videoUrl = (currentEpData && currentEpData.videoUrl) || (typeof getVideoUrlForEpisode === "function" ? getVideoUrlForEpisode(anime.slug, ep) : "");
   var isIframe = isIframeVideo(videoUrl);
   var progressKey = anime.slug + "-ep" + ep;
   var savedTime = (window.__watchProgress || {})[progressKey] || 0;
@@ -1067,10 +1176,6 @@ async function renderWatch(main) {
           : '<video id="video-player" class="watch-video" src="' + videoUrl + '" poster="' + anime.banner + '" preload="metadata" playsinline controlsList="nodownload" oncontextmenu="return false"></video>')
       : '<div class="watch-player-placeholder">' + icons.play + '<p style="color:var(--text-mute);font-size:13px;">Video episode ' + ep + ' belum tersedia</p></div>') +
     (!isIframe && videoUrl ? '<div class="video-controls-overlay" id="custom-video-controls"></div>' : "") +
-    '<div class="comment-overlay-layer" id="comment-overlay-layer"></div>' +
-    '<button class="danmaku-toggle" id="danmaku-toggle" onclick="toggleCommentOverlay()" style="display:none">' +
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px;"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg> <span id="danmaku-state">ON</span>' +
-    '</button>' +
     '</div>' +
     (!isIframe && savedTime > 5 ? '<div class="resume-hint fade-up">Lanjut dari ' + formatTime(savedTime) + '</div>' : "") +
     '<div class="watch-info-card">' +
@@ -1148,12 +1253,11 @@ async function renderWatch(main) {
         }
       });
     }
-    startCommentOverlay();
   }, 100);
 }
 
 function changeEpisode(n) {
-  stopCommentOverlay();
+  if (typeof stopCommentOverlay === "function") stopCommentOverlay();
   if (typeof stopListenComments === "function") stopListenComments();
   exitFakeFullscreen();
   var v = document.getElementById("video-player");
@@ -1174,6 +1278,8 @@ function changeEpisode(n) {
     }
   }
   currentEpisode = Number(n);
+  window.currentEpisode = currentEpisode;
+  if (typeof updateUrl === "function" && currentAnimeSlug) updateUrl(currentAnimeSlug, currentEpisode);
   renderPage();
   window.scrollTo({ top: 0 });
 }
@@ -1195,7 +1301,7 @@ function reportVideo() {
 }
 
 function shareAnime(slug, title) {
-  var url = window.location.origin + window.location.pathname + "#watch/" + slug;
+  var url = window.location.origin + "/anime/" + slug;
   var shareData = { title: "Nonton " + title + " di MikoAnime", text: "Streaming " + title + " subtitle Indonesia di MikoAnime!", url: url };
   if (navigator.share) navigator.share(shareData).catch(function() {});
   else if (navigator.clipboard) navigator.clipboard.writeText(url).then(function() { showToast("Link disalin!"); }).catch(function() { showToast("Link: " + url); });
@@ -1217,22 +1323,15 @@ async function sendComment() {
   input.value = "";
   input.placeholder = "Tulis komentar di Episode " + currentEpisode + "...";
   if (navigator.vibrate) navigator.vibrate(30);
-  if (replyId === null && typeof result === "object" && result.id) {
-    showCommentOverlay({
-      id: result.id, user: result.user, userId: result.userId, avatar: result.avatar,
-      content: result.content, createdAt: new Date().toISOString(),
-      likes: 0, likedBy: [], replies: []
-    }, true);
-    if (currentUser && currentUserProfile) {
-      try {
-        var newCount = (currentUserProfile.comments || 0) + 1;
-        await fbUpdate(COLLECTIONS.USERS, currentUser.uid, { comments: newCount });
-        currentUserProfile.comments = newCount;
-        userProfile.comments = newCount;
-        var idx = allUsers.findIndex(function(u) { return u.id === currentUser.uid; });
-        if (idx > -1) allUsers[idx].comments = newCount;
-      } catch (e) {}
-    }
+  if (currentUser && currentUserProfile) {
+    try {
+      var newCount = (currentUserProfile.comments || 0) + 1;
+      await fbUpdate(COLLECTIONS.USERS, currentUser.uid, { comments: newCount });
+      currentUserProfile.comments = newCount;
+      userProfile.comments = newCount;
+      var idx = allUsers.findIndex(function(u) { return u.id === currentUser.uid; });
+      if (idx > -1) allUsers[idx].comments = newCount;
+    } catch (e) {}
   }
   showToast(replyId ? "Reply terkirim" : "Komentar terkirim");
 }
@@ -1272,114 +1371,6 @@ async function deleteReply(commentId, replyId) {
   if (!confirm("Hapus reply ini?")) return;
   var ok = await deleteReplyFromFirestore(commentId, replyId);
   if (ok) showSuccessToast("Reply dihapus");
-}
-
-/* ==================== COMMENT OVERLAY ==================== */
-function toggleCommentOverlay() {
-  commentOverlayActive = !commentOverlayActive;
-  var toggle = document.getElementById("danmaku-toggle");
-  var state = document.getElementById("danmaku-state");
-  var layer = document.getElementById("comment-overlay-layer");
-  if (state) state.textContent = commentOverlayActive ? "ON" : "OFF";
-  if (toggle) toggle.classList.toggle("off", !commentOverlayActive);
-  if (layer) layer.style.display = commentOverlayActive ? "flex" : "none";
-}
-
-function startCommentOverlay() {
-  stopCommentOverlay();
-  var layer = document.getElementById("comment-overlay-layer");
-  if (!layer) return;
-  var comments = getCommentsByEpisode(currentAnimeSlug, currentEpisode);
-  if (comments.length === 0) { layer.style.display = "none"; return; }
-  layer.style.display = commentOverlayActive ? "flex" : "none";
-  var index = 0;
-  commentOverlayInterval = setInterval(function() {
-    if (!commentOverlayActive) return;
-    if (index >= comments.length) { index = 0; layer.innerHTML = ""; }
-    showCommentOverlay(comments[index], false);
-    index++;
-  }, 3000);
-}
-
-function stopCommentOverlay() {
-  if (commentOverlayInterval) { clearInterval(commentOverlayInterval); commentOverlayInterval = null; }
-  var layer = document.getElementById("comment-overlay-layer");
-  if (layer) layer.innerHTML = "";
-}
-
-function showCommentOverlay(comment, isNew) {
-  isNew = isNew || false;
-  var layer = document.getElementById("comment-overlay-layer");
-  if (!layer) return;
-  var existing = layer.querySelectorAll(".comment-overlay-item");
-  if (existing.length >= 3) existing[0].remove();
-
-  var commenterUser = allUsers.find(function(u) { return u.username === comment.user; });
-  var commenterLevel = (commenterUser && commenterUser.level) || comment.level || 1;
-  var commenterRank = (commenterUser && commenterUser.rank) || calculateRank(commenterLevel).name;
-  var rankInfo = calculateRank(commenterLevel);
-  var safeName = String(comment.user || "").replace(/'/g, "\\'");
-  var avatarUrl = comment.avatar || (commenterUser && commenterUser.avatar) || "https://i.pravatar.cc/150";
-  var bannerUrl = (commenterUser && commenterUser.bannerUrl) || "";
-  var bannerType = (commenterUser && commenterUser.bannerType) || "image";
-  var hasBanner = !!bannerUrl;
-  var isPremium = commenterUser && commenterUser.isPremium === true;
-  var clanName = (commenterUser && commenterUser.clanName) || "";
-  var clanColor = getClanColorForUser(commenterUser);
-
-  var bannerHTML = "";
-  if (hasBanner) {
-    if (bannerType === "video") {
-      bannerHTML = '<div class="comment-overlay-banner"><video src="' + bannerUrl + '" autoplay loop muted playsinline></video><div class="comment-overlay-banner-overlay"></div></div>';
-    } else {
-      bannerHTML = '<div class="comment-overlay-banner"><img src="' + bannerUrl + '" alt=""><div class="comment-overlay-banner-overlay"></div></div>';
-    }
-  }
-
-  var item = document.createElement("div");
-  item.className = "comment-overlay-item" + (isNew ? " new" : "");
-  item.dataset.commentId = comment.id;
-
-  item.innerHTML =
-    bannerHTML +
-    '<div class="comment-overlay-content">' +
-    '<img class="comment-overlay-avatar" src="' + avatarUrl + '" alt="" onclick="openPublicProfile(\'' + safeName + '\')">' +
-    '<div class="comment-overlay-body">' +
-    '<div class="comment-overlay-header">' +
-    '<span class="comment-overlay-name" onclick="openPublicProfile(\'' + safeName + '\')">' + escapeHtml(comment.user) + '</span>' +
-    (commenterUser && commenterUser.verified ? '<img class="verified-badge verified-badge-sm" src="' + commenterUser.verified + '" alt="">' : "") +
-    '<span class="comment-overlay-id">' + (comment.userId || '#?') + '</span>' +
-    (isPremium ? '<span class="comment-overlay-premium">PREMIUM</span>' : "") +
-    (clanName ? '<span class="clan-lb-badge" style="--clan-color:' + clanColor + ';">' + escapeHtml(clanName.toUpperCase()) + '</span>' : "") +
-    '<span class="comment-overlay-level">Lvl ' + commenterLevel + '</span>' +
-    '<span class="comment-overlay-rank" style="color:' + rankInfo.color + ';border-color:' + rankInfo.color + ';">' + commenterRank + '</span>' +
-    '</div>' +
-    '<div class="comment-overlay-text">' + escapeHtml(comment.content) + '</div>' +
-    '</div>' +
-    '<button class="comment-overlay-close" onclick="dismissCommentOverlay(\'' + comment.id + '\')">' +
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
-    '</button>' +
-    '</div>';
-
-  layer.appendChild(item);
-  if (!isNew) {
-    setTimeout(function() {
-      if (item.parentNode) {
-        item.style.animation = "commentSlideDown 0.3s ease-in forwards";
-        setTimeout(function() { if (item.parentNode) item.parentNode.removeChild(item); }, 300);
-      }
-    }, 10000);
-  }
-}
-
-function dismissCommentOverlay(id) {
-  var layer = document.getElementById("comment-overlay-layer");
-  if (!layer) return;
-  var item = layer.querySelector('[data-comment-id="' + id + '"]');
-  if (item) {
-    item.style.animation = "commentSlideDown 0.3s ease-in forwards";
-    setTimeout(function() { if (item.parentNode) item.parentNode.removeChild(item); }, 300);
-  }
 }
 
 /* ==================== WATCH COMMENT HTML ==================== */
@@ -1484,23 +1475,13 @@ function renderLeaderboard(main) {
     var sortedByJoin = allUsers.slice().sort(function(a, b) { return calculateJoinDays(b) - calculateJoinDays(a); });
     data = sortedByJoin.slice(0, 100).map(function(u, i) {
       var days = calculateJoinDays(u);
-      return {
-        rank: i + 1, userId: u.userId, username: u.username, avatar: u.avatar,
-        level: u.level, rankName: u.rank, clanName: u.clanName,
-        clanColor: getClanColorForUser(u), verified: u.verified, isPremium: u.isPremium,
-        scoreText: days + " hari"
-      };
+      return { rank: i + 1, userId: u.userId, username: u.username, avatar: u.avatar, level: u.level, rankName: u.rank, clanName: u.clanName, clanColor: getClanColorForUser(u), verified: u.verified, isPremium: u.isPremium, scoreText: days + " hari" };
     });
     title = "Top Giveaway";
   } else if (type === "level") {
     var sorted = allUsers.slice().sort(function(a, b) { return (b.level || 0) - (a.level || 0); });
     data = sorted.slice(0, 100).map(function(u, i) {
-      return {
-        rank: i + 1, userId: u.userId, username: u.username, avatar: u.avatar,
-        level: u.level, rankName: u.rank, clanName: u.clanName,
-        clanColor: getClanColorForUser(u), verified: u.verified, isPremium: u.isPremium,
-        scoreText: "Lvl " + (u.level || 1)
-      };
+      return { rank: i + 1, userId: u.userId, username: u.username, avatar: u.avatar, level: u.level, rankName: u.rank, clanName: u.clanName, clanColor: getClanColorForUser(u), verified: u.verified, isPremium: u.isPremium, scoreText: "Lvl " + (u.level || 1) };
     });
     title = "Top Level";
   } else if (type === "rank") {
@@ -1512,22 +1493,13 @@ function renderLeaderboard(main) {
       return (b.xp || 0) - (a.xp || 0);
     });
     data = sorted2.slice(0, 100).map(function(u, i) {
-      return {
-        rank: i + 1, userId: u.userId, username: u.username, avatar: u.avatar,
-        level: u.level, rankName: u.rank, clanName: u.clanName,
-        clanColor: getClanColorForUser(u), verified: u.verified, isPremium: u.isPremium,
-        scoreText: u.rank || "Rookie"
-      };
+      return { rank: i + 1, userId: u.userId, username: u.username, avatar: u.avatar, level: u.level, rankName: u.rank, clanName: u.clanName, clanColor: getClanColorForUser(u), verified: u.verified, isPremium: u.isPremium, scoreText: u.rank || "Rookie" };
     });
     title = "Top Rank";
   } else if (type === "clan") {
     data = clanList.map(function(c) {
       var totalXp = calculateClanTotalXp(c.members, allUsers);
-      return {
-        rank: 0, id: c.id, name: c.name, logo: c.logo, color: c.color,
-        memberCount: c.members.length, level: getClanLevel(totalXp),
-        totalXp: totalXp, isClan: true
-      };
+      return { rank: 0, id: c.id, name: c.name, logo: c.logo, color: c.color, memberCount: c.members.length, level: getClanLevel(totalXp), totalXp: totalXp, isClan: true };
     }).sort(function(a, b) { return b.totalXp - a.totalXp; }).map(function(c, i) { c.rank = i + 1; return c; }).slice(0, 100);
     title = "Top Clan";
   }
@@ -1654,7 +1626,6 @@ function startHoldTimer(slug, ep) {
       if (idx > -1) {
         historyList.splice(idx, 1);
         saveHistory();
-        // Hapus progress juga
         var key = slug + "-ep" + ep;
         if (window.__watchProgress && window.__watchProgress[key]) {
           delete window.__watchProgress[key];
@@ -1780,7 +1751,10 @@ function openPremium() {
   renderPage(); window.scrollTo({ top: 0 });
 }
 
-function openDiskusi() { openGlobalChat(); }
+function openDiskusi() {
+  if (typeof openGlobalChat === "function") openGlobalChat();
+  else switchTab("global-chat");
+}
 
 function openPeliharaan() {
   unlockScroll();
@@ -1883,7 +1857,7 @@ function renderPremium(main) {
 
 function buyPremium(plan) { showToast("Paket " + plan + " dipilih. Pembayaran segera hadir!"); }
 
-function renderDiskusi(main) { renderGlobalChat(main); }
+function renderDiskusi(main) { if (typeof renderGlobalChat === "function") renderGlobalChat(main); }
 
 function renderPeliharaan(main) {
   main.innerHTML =
@@ -2113,7 +2087,7 @@ function followUser(username) { showToast("Kamu sekarang mengikuti " + username 
 
 function shareProfile(username) {
   var u = getPublicUser(username);
-  var url = window.location.origin + window.location.pathname + "#profile/" + username;
+  var url = window.location.origin + "/profil/" + username;
   var shareData = { title: "Profil " + username + " di MikoAnime", text: "Cek profil " + username + " (Lvl " + u.level + ") di MikoAnime!", url: url };
   if (navigator.share) navigator.share(shareData).catch(function() {});
   else if (navigator.clipboard) navigator.clipboard.writeText(url).then(function() { showToast("Link disalin!"); }).catch(function() { showToast("Link: " + url); });
@@ -2122,10 +2096,16 @@ function shareProfile(username) {
 
 /* ==================== DETAIL ANIME ==================== */
 function renderDetail(main) {
-  var anime = getAnimeBySlug(currentAnimeSlug) || animeList[0];
-  if (!anime) { switchTab("home"); return; }
+  var anime = getAnimeBySlug(currentAnimeSlug);
+  if (!anime) {
+    console.error("❌ Anime gak ketemu:", currentAnimeSlug);
+    showToast("Anime gak ditemukan");
+    currentTab = "home";
+    renderPage();
+    return;
+  }
   var fav = isFavorited(anime.slug);
-  var related = getRelatedAnime(anime, 6);
+  var related = (typeof getRelatedAnime === "function") ? getRelatedAnime(anime, 6) : [];
 
   main.innerHTML =
     '<div class="detail-page">' +
@@ -2168,7 +2148,6 @@ function renderDetail(main) {
     '</div>' +
     (related.length > 0 ? '<div class="detail-section"><h3 class="detail-section-title">Anime Terkait</h3><div class="anime-grid-3">' + related.map(animeCardHTML).join("") + '</div></div>' : "") +
     '</div>';
-
 
   setTimeout(function() {
     var syn = document.getElementById("detail-synopsis");
@@ -2684,10 +2663,21 @@ renderPage = function() {
   if (typeof isLoggedIn === "function" && isLoggedIn()) {
     await loadAllData();
     hideLoading();
-    renderPage();
+    if (typeof handleUrlRouting === "function" && handleUrlRouting()) {
+      renderPage();
+    } else {
+      renderPage();
+    }
   } else {
     hideLoading();
     if (typeof renderLoginPage === "function") renderLoginPage();
   }
+  window.addEventListener("popstate", function(e) {
+    if (typeof handleUrlRouting === "function" && handleUrlRouting()) {
+      renderPage();
+    } else {
+      switchTab("home");
+    }
+  });
   console.log("MikoAnime ready");
 })();
