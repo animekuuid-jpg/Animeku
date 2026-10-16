@@ -109,12 +109,24 @@ function getClanColorForUser(u) {
   return clanObj ? clanObj.color : (typeof generateClanColor === "function" ? generateClanColor(clanName) : "#a855f7");
 }
 
-/* ==================== NEW ANIME (khusus badge NEW) ==================== */
+/* ==================== AVATAR RESOLVER ==================== */
+/**
+ * Ambil URL avatar dari berbagai kemungkinan nama field
+ */
+function resolveAvatar(u) {
+  if (!u) return "";
+  var url = u.avatar || u.photo || u.photoURL || u.foto || u.picture || u.image || u.profilePic || u.profileImage || "";
+  if (Array.isArray(url)) url = url[0] || "";
+  if (typeof url === "object" && url !== null) url = url.url || url.src || url.href || "";
+  return String(url || "").trim();
+}
+
+/* ==================== NEW ANIME ==================== */
 function getNewAnime() {
   return animeList.filter(function(a) { return a.isNew !== false; });
 }
 
-/* ==================== ANIME POPULER (semua anime, sort views + rating) ==================== */
+/* ==================== ANIME POPULER ==================== */
 function getPopularAnime() {
   return animeList.slice().sort(function(a, b) {
     var scoreA = (Number(a.views) || 0) / 1000 + (Number(a.rating) || 0) * 100;
@@ -160,13 +172,16 @@ async function loadAllData() {
       };
     });
 
+    // ⭐ FIX: Support berbagai nama field avatar
     allUsers = (userDocs || []).map(function(u) {
       var xp = Math.min(Math.max(u.xp || 0, 0), 999999999);
       var level = u.level || calculateLevel(xp);
       var rankObj = calculateRank(level);
+      var avatarUrl = resolveAvatar(u);
       return {
         id: u.id, userId: u.userId || u["user id"] || "#?",
-        username: u.username || u.nama || "-", avatar: u.avatar || u.foto || "",
+        username: u.username || u.nama || u.displayName || "-",
+        avatar: avatarUrl,
         xp: xp, level: level, rank: u.rank || rankObj.name,
         rankColor: u.rankColor || rankObj.color,
         followers: Math.min(Math.max(u.followers || 0, 0), 99999999),
@@ -1154,7 +1169,28 @@ async function renderWatch(main) {
   hideLoading();
 
   var currentEpData = episodes.find(function(e) { return Number(e.id) === ep; });
-  var videoUrl = (currentEpData && currentEpData.videoUrl) || (typeof getVideoUrlForEpisode === "function" ? getVideoUrlForEpisode(anime.slug, ep) : "");
+
+  window.__currentEpisodeData = currentEpData || null;
+  window.__currentQuality = null;
+
+  var videoUrl = "";
+  if (currentEpData) {
+    if (typeof pickBestQualityForEpisode === "function") {
+      var picked = pickBestQualityForEpisode(currentEpData);
+      if (picked) {
+        videoUrl = picked.url;
+        window.__currentQuality = picked.value;
+      }
+    }
+    if (!videoUrl && currentEpData.videoUrl) {
+      videoUrl = currentEpData.videoUrl;
+      window.__currentQuality = "legacy";
+    }
+  }
+  if (!videoUrl && typeof getVideoUrlForEpisode === "function") {
+    videoUrl = getVideoUrlForEpisode(anime.slug, ep);
+  }
+
   var isIframe = isIframeVideo(videoUrl);
   var progressKey = anime.slug + "-ep" + ep;
   var savedTime = (window.__watchProgress || {})[progressKey] || 0;
@@ -1288,7 +1324,7 @@ function downloadVideo(url) {
   if (!url) { showToast("Video tidak tersedia"); return; }
   var a = document.createElement("a");
   a.href = url;
-  a.download = "mikoanime-video.mp4";
+  a.download = "animeku-video.mp4";
   a.target = "_blank";
   document.body.appendChild(a);
   a.click();
@@ -1302,7 +1338,7 @@ function reportVideo() {
 
 function shareAnime(slug, title) {
   var url = window.location.origin + "/anime/" + slug;
-  var shareData = { title: "Nonton " + title + " di MikoAnime", text: "Streaming " + title + " subtitle Indonesia di MikoAnime!", url: url };
+  var shareData = { title: "Nonton " + title + " di AnimeKu", text: "Streaming " + title + " subtitle Indonesia di AnimeKu!", url: url };
   if (navigator.share) navigator.share(shareData).catch(function() {});
   else if (navigator.clipboard) navigator.clipboard.writeText(url).then(function() { showToast("Link disalin!"); }).catch(function() { showToast("Link: " + url); });
   else showToast("Link: " + url);
@@ -1786,6 +1822,7 @@ function openSettings() {
   window.scrollTo({ top: 0 });
 }
 
+/* ==================== NOTIFIKASI ==================== */
 function renderNotifikasi(main) {
   var readList = window.__notifRead || [];
   var unread = notificationsList.filter(function(n) { return readList.indexOf(n.id) === -1; }).length;
@@ -1800,17 +1837,82 @@ function renderNotifikasi(main) {
     '<div class="fade-up d1">' +
     (list.length === 0
       ? '<p style="text-align:center;color:var(--text-mute);padding:40px 0;">Tidak ada notifikasi</p>'
-      : list.map(function(n) {
-          return '<div class="notif-item ' + (readList.indexOf(n.id) === -1 ? "unread" : "") + '" onclick="markNotifRead(\'' + n.id + '\')">' +
-            '<div class="notif-icon type-' + n.type + '">' + (n.type === "update" ? icons.play : n.type === "comment" ? icons.chat : icons.star) + '</div>' +
-            '<div class="notif-body">' +
-            '<div class="notif-title">' + escapeHtml(n.title || "") + '</div>' +
-            '<div class="notif-msg">' + escapeHtml(n.message || "") + '</div>' +
-            '<div class="notif-time">' + (n.time || "") + '</div>' +
-            '</div>' +
-            '</div>';
-        }).join("")) +
+      : list.map(renderNotifItemHTML).join("")) +
     '</div>';
+}
+
+function renderNotifItemHTML(n) {
+  var readList = window.__notifRead || [];
+  var isUnread = readList.indexOf(n.id) === -1;
+
+  var isAnimeNotif = n.targetType === "anime" && n.targetId;
+  var anime = isAnimeNotif ? getAnimeBySlug(n.targetId) : null;
+
+  var clickAction = "markNotifRead('" + n.id + "')";
+  if (isAnimeNotif) {
+    clickAction = "openNotifAnime('" + n.id + "', '" + n.targetId + "')";
+  } else if (n.targetType === "user" && n.targetId) {
+    clickAction = "markNotifRead('" + n.id + "')";
+  }
+
+  var typeIcon = n.type === "update" ? icons.play : n.type === "comment" ? icons.chat : icons.star;
+
+  if (isAnimeNotif && anime && anime.cover) {
+    return '<div class="notif-item notif-item-anime ' + (isUnread ? "unread" : "") + '" onclick="' + clickAction + '">' +
+      '<div class="notif-poster-wrap">' +
+      '<img class="notif-poster" src="' + escapeHtml(anime.cover) + '" alt="' + escapeHtml(anime.title || "") + '" loading="lazy">' +
+      '<div class="notif-poster-overlay">' +
+      '<div class="notif-poster-icon">' + typeIcon + '</div>' +
+      '</div>' +
+      (isUnread ? '<div class="notif-poster-dot"></div>' : "") +
+      '</div>' +
+      '<div class="notif-body">' +
+      '<div class="notif-badge notif-badge-anime">' + escapeHtml(n.targetLabel || anime.title || "Anime") + '</div>' +
+      '<div class="notif-title">' + escapeHtml(n.title || "") + '</div>' +
+      '<div class="notif-msg">' + escapeHtml(n.message || "") + '</div>' +
+      '<div class="notif-footer">' +
+      '<span class="notif-time">' + (n.time || "") + '</span>' +
+      '<span class="notif-cta">Tonton ' + icons.chevronRight + '</span>' +
+      '</div>' +
+      '</div>' +
+      '</div>';
+  }
+
+  var badgeHTML = "";
+  if (n.targetType === "anime" && n.targetLabel) {
+    badgeHTML = '<span class="notif-badge notif-badge-anime">' + escapeHtml(n.targetLabel) + '</span>';
+  } else if (n.targetType === "user" && n.targetLabel) {
+    badgeHTML = '<span class="notif-badge notif-badge-user">' + escapeHtml(n.targetLabel) + '</span>';
+  }
+
+  var arrowHTML = isAnimeNotif
+    ? '<span class="notif-arrow">' + icons.chevronRight + '</span>'
+    : "";
+
+  return '<div class="notif-item ' + (isUnread ? "unread" : "") + '" onclick="' + clickAction + '">' +
+    '<div class="notif-icon type-' + n.type + '">' + typeIcon + '</div>' +
+    '<div class="notif-body">' +
+    (badgeHTML ? '<div class="notif-badge-wrap">' + badgeHTML + '</div>' : "") +
+    '<div class="notif-title">' + escapeHtml(n.title || "") + '</div>' +
+    '<div class="notif-msg">' + escapeHtml(n.message || "") + '</div>' +
+    '<div class="notif-time">' + (n.time || "") + '</div>' +
+    '</div>' +
+    arrowHTML +
+    '</div>';
+}
+
+function openNotifAnime(notifId, animeSlug) {
+  window.__notifRead = window.__notifRead || [];
+  if (window.__notifRead.indexOf(notifId) === -1) {
+    window.__notifRead.push(notifId);
+    saveNotifRead();
+  }
+
+  if (animeSlug && typeof openAnime === "function") {
+    openAnime(animeSlug);
+  } else {
+    renderPage();
+  }
 }
 
 function setNotifTab(tab) { currentNotifTab = tab; renderPage(); }
@@ -1836,7 +1938,7 @@ function renderPremium(main) {
         '</div>'
       : '<div class="premium-hero fade-up d1">' +
         '<div class="premium-hero-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg></div>' +
-        '<div class="premium-hero-title">MikoAnime Premium</div>' +
+        '<div class="premium-hero-title">AnimeKu Premium</div>' +
         '<div class="premium-hero-sub">Buka stiker, ganti banner, verified badge, dan kualitas 1080p.</div>' +
         '</div>' +
         '<div class="plan-list fade-up d2">' +
@@ -2088,7 +2190,7 @@ function followUser(username) { showToast("Kamu sekarang mengikuti " + username 
 function shareProfile(username) {
   var u = getPublicUser(username);
   var url = window.location.origin + "/profil/" + username;
-  var shareData = { title: "Profil " + username + " di MikoAnime", text: "Cek profil " + username + " (Lvl " + u.level + ") di MikoAnime!", url: url };
+  var shareData = { title: "Profil " + username + " di AnimeKu", text: "Cek profil " + username + " (Lvl " + u.level + ") di AnimeKu!", url: url };
   if (navigator.share) navigator.share(shareData).catch(function() {});
   else if (navigator.clipboard) navigator.clipboard.writeText(url).then(function() { showToast("Link disalin!"); }).catch(function() { showToast("Link: " + url); });
   else showToast("Link: " + url);
@@ -2647,7 +2749,7 @@ renderPage = function() {
 
 /* ==================== INIT ==================== */
 (async function init() {
-  console.log("MikoAnime start");
+  console.log("AnimeKu start");
   showLoading("Menyiapkan aplikasi...");
   if (!firebaseReady) {
     showErrorToast("Firebase gagal load. Cek koneksi.");
@@ -2679,5 +2781,5 @@ renderPage = function() {
       switchTab("home");
     }
   });
-  console.log("MikoAnime ready");
+  console.log("AnimeKu ready");
 })();
