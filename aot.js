@@ -1,5 +1,7 @@
 /* ==================== AUTH SYSTEM ==================== */
-/* Login WAJIB Google. Username & avatar otomatis dari akun Google. */
+/* Login lewat Google atau email & password. Data user disimpan di users/{uid}. */
+/* Username awal = nama saat daftar (nama akun Google, atau bagian depan email). */
+/* signupName tidak pernah berubah. username boleh diganti dari halaman profil. */
 /* userId urut: #001, #002, #003, ... */
 
 let currentUser = null;
@@ -9,7 +11,7 @@ let authReady = false;
 /* ==================== INIT AUTH ==================== */
 async function initAuth() {
   if (!firebaseReady || !auth) {
-    console.error("❌ Firebase belum siap buat auth");
+    console.error("Firebase belum siap buat auth");
     return false;
   }
 
@@ -31,13 +33,13 @@ async function initAuth() {
       resolved = true;
 
       if (user) {
-        console.log("✅ User login:", user.uid);
+        console.log("User login:", user.uid);
         currentUser = user;
         await loadOrCreateUserProfile(user);
         authReady = true;
         resolve(true);
       } else {
-        console.log("👤 Belum login — tampilkan halaman login");
+        console.log("Belum login, tampilkan halaman login");
         currentUser = null;
         currentUserProfile = null;
         authReady = true;
@@ -45,6 +47,48 @@ async function initAuth() {
       }
     });
   });
+}
+
+/* ==================== PROVIDER LOGIN ==================== */
+// Dari akun Firebase: "google.com" untuk Google, "password" untuk email.
+function getLoginProvider(user) {
+  const ids = (user && user.providerData ? user.providerData : []).map(p => p.providerId);
+  if (ids.includes("google.com")) return "google";
+  if (ids.includes("password")) return "email";
+  return "other";
+}
+
+/* ==================== NAMA AWAL DAFTAR ==================== */
+// Ambil nama dari akun Google. Kalau kosong, pakai bagian depan email.
+function getSignupName(user) {
+  const clean = (s) => String(s || "").replace(/[^a-zA-Z0-9 _#.]/g, "").replace(/\s+/g, " ").trim().slice(0, 30);
+
+  const fromName = clean(user && user.displayName);
+  if (fromName.length >= 2) return fromName;
+
+  const fromEmail = clean(String(user && user.email ? user.email : "").split("@")[0]);
+  if (fromEmail.length >= 2) return fromEmail;
+
+  return "User " + String(user && user.uid ? user.uid : "").slice(0, 4);
+}
+
+// Kalau nama sudah dipakai akun lain, tambahkan angka: "Nama", "Nama 2", "Nama 3", dst.
+async function getUniqueUsername(base, uid) {
+  let candidate = base;
+  let n = 2;
+  for (let i = 0; i < 50; i++) {
+    let taken = false;
+    try {
+      const dup = await fbQueryWhere(COLLECTIONS.USERS, "username", "==", candidate, 1);
+      taken = dup.length > 0 && dup[0].id !== uid;
+    } catch (e) {
+      console.warn("Cek username gagal:", e);
+    }
+    if (!taken) return candidate;
+    candidate = base + " " + n;
+    n++;
+  }
+  return base + " " + uid.slice(0, 4);
 }
 
 /* ==================== LOAD / CREATE USER PROFILE ==================== */
@@ -57,79 +101,69 @@ async function loadOrCreateUserProfile(user) {
       const data = docSnap.data();
       currentUserProfile = { id: user.uid, ...data };
 
-      const googleName = generateUsernameFromGoogle(user);
-      const googlePhoto = user.photoURL || "";
-
       const updates = { lastSeen: new Date().toISOString() };
-      let needUpdate = false;
 
+      // Lengkapi data lama yang belum punya nama awal atau provider
+      if (!data.signupName) {
+        updates.signupName = getSignupName(user);
+        currentUserProfile.signupName = updates.signupName;
+      }
+      if (!data.provider) {
+        updates.provider = getLoginProvider(user);
+        currentUserProfile.provider = updates.provider;
+      }
       if (!data.username || data.username.trim() === "") {
-        updates.username = googleName;
-        currentUserProfile.username = googleName;
-        needUpdate = true;
-        console.log("🔄 Username auto-set dari Google:", googleName);
+        updates.username = updates.signupName || getSignupName(user);
+        currentUserProfile.username = updates.username;
+      }
+      if (user.email && !data.email) {
+        updates.email = user.email;
+        currentUserProfile.email = user.email;
+      }
+      if (user.photoURL && (!data.avatar || data.avatar.includes("pravatar.cc"))) {
+        updates.avatar = user.photoURL;
+        currentUserProfile.avatar = user.photoURL;
       }
 
-      if (googlePhoto && (!data.avatar || data.avatar.includes("pravatar.cc"))) {
-        updates.avatar = googlePhoto;
-        currentUserProfile.avatar = googlePhoto;
-        needUpdate = true;
-        console.log("🔄 Avatar auto-sync dari Google");
-      }
-
-      if (needUpdate) {
-        await docRef.update(updates);
-        console.log("🔄 Profile synced dari Google");
-      } else {
-        docRef.update({ lastSeen: new Date().toISOString() }).catch(() => {});
-      }
-
-      console.log("📄 Profile loaded:", currentUserProfile.username, "| ID:", currentUserProfile.userId);
+      await docRef.update(updates);
+      console.log("Profile loaded:", currentUserProfile.username, "| ID:", currentUserProfile.userId);
     } else {
-      const profile = await createUserProfileFromGoogle(user);
+      const profile = await createUserProfile(user);
       await docRef.set(profile);
       currentUserProfile = { id: user.uid, ...profile };
-      console.log("🆕 Profile created:", profile.username, "| ID:", profile.userId);
+      console.log("Profile created:", profile.username, "| ID:", profile.userId);
     }
   } catch (e) {
-    console.error("❌ Gagal load/create user:", e);
-    currentUserProfile = await createUserProfileFromGoogle(user);
+    console.error("Gagal load/create user:", e);
+    showErrorToast("Gagal menyimpan data user: " + (e.code || e.message));
+    currentUserProfile = await createUserProfile(user);
     currentUserProfile.id = user.uid;
   }
 }
 
-/* ==================== GENERATE USERNAME DARI GOOGLE ==================== */
-/* ==================== CREATE PROFILE DARI GOOGLE ==================== */
-async function createUserProfileFromGoogle(user) {
-  // Generate userId urut (#001, #002, ...)
+/* ==================== CREATE PROFILE ==================== */
+async function createUserProfile(user) {
+  // userId urut (#001, #002, ...). Kalau gagal, pakai angka acak.
   let userId = "#001";
   try {
     userId = await generateUserId() || ("#" + Math.floor(100000 + Math.random() * 900000));
   } catch (e) {
-    console.warn("Gagal generate userId, pakai random:", e);
+    console.warn("Gagal generate userId, pakai acak:", e);
     userId = "#" + Math.floor(100000 + Math.random() * 900000);
   }
 
-  let username = generateUsernameFromGoogle(user);
-
-  try {
-    const dup = await fbQueryWhere(COLLECTIONS.USERS, "username", "==", username, 1);
-    if (dup.length > 0 && dup[0].id !== user.uid) {
-      username = username + " " + Math.floor(100 + Math.random() * 900);
-      console.log("⚠️ Username duplikat, jadi:", username);
-    }
-  } catch (e) {
-    console.warn("Cek duplikat gagal:", e);
-  }
-
-  const googlePhoto = user.photoURL || "";
+  const signupName = getSignupName(user);
+  const username = await getUniqueUsername(signupName, user.uid);
+  const photo = user.photoURL || "";
+  const now = new Date().toISOString();
 
   return {
     userId: userId,
     username: username,
-    avatar: googlePhoto || `https://i.pravatar.cc/150?u=${user.uid}`,
+    signupName: signupName,
     email: user.email || "",
-    provider: "google",
+    provider: getLoginProvider(user),
+    avatar: photo || `https://i.pravatar.cc/150?u=${user.uid}`,
     xp: 0,
     level: 1,
     rank: "Rookie",
@@ -146,9 +180,9 @@ async function createUserProfileFromGoogle(user) {
     clanId: "",
     clanName: "",
     verified: "",
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    lastSeen: new Date().toISOString()
+    createdAt: now,
+    updatedAt: now,
+    lastSeen: now
   };
 }
 
@@ -159,13 +193,13 @@ async function loginWithGoogle() {
     const provider = new firebase.auth.GoogleAuthProvider();
     provider.setCustomParameters({ prompt: "select_account" });
     const result = await auth.signInWithPopup(provider);
-    console.log("✅ Google login:", result.user.uid);
+    console.log("Google login:", result.user.uid);
     currentUser = result.user;
     await loadOrCreateUserProfile(result.user);
     showSuccessToast("Berhasil login, " + currentUserProfile.username + "!");
     return true;
   } catch (e) {
-    console.error("❌ Google login gagal:", e);
+    console.error("Google login gagal:", e);
     if (e.code === "auth/popup-closed-by-user" || e.code === "auth/cancelled-popup-request") {
       showToast("Login dibatalkan");
     } else if (e.code === "auth/unauthorized-domain") {
@@ -189,7 +223,7 @@ async function logout() {
     showToast("Logout berhasil");
     setTimeout(() => location.reload(), 600);
   } catch (e) {
-    console.error("❌ Logout gagal:", e);
+    console.error("Logout gagal:", e);
     showErrorToast("Gagal logout");
   }
 }
@@ -234,7 +268,7 @@ async function setUsername(newUsername) {
     showSuccessToast("Username disimpan!");
     return true;
   } catch (e) {
-    console.error("❌ Gagal set username:", e);
+    console.error("Gagal set username:", e);
     showErrorToast("Gagal simpan username");
     return false;
   }
@@ -246,24 +280,17 @@ async function syncFromGoogle() {
     showToast("Belum login");
     return false;
   }
-
-  const googleName = generateUsernameFromGoogle(currentUser);
-  const googlePhoto = currentUser.photoURL || "";
-
+  const updates = {};
+  if (currentUser.photoURL) updates.avatar = currentUser.photoURL;
+  if (currentUser.email) updates.email = currentUser.email;
+  if (Object.keys(updates).length === 0) { showToast("Tidak ada data dari Google"); return false; }
   try {
-    const updates = { updatedAt: new Date().toISOString() };
-    if (googleName) updates.username = googleName;
-    if (googlePhoto) updates.avatar = googlePhoto;
-
-    await fbUpdate(COLLECTIONS.USERS, currentUser.uid, updates);
-    currentUserProfile.username = googleName || currentUserProfile.username;
-    currentUserProfile.avatar = googlePhoto || currentUserProfile.avatar;
-
-    showSuccessToast("Profil disync dari Google!");
+    await fbUpdate(COLLECTIONS.USERS, currentUser.uid, { ...updates, updatedAt: new Date().toISOString() });
+    Object.assign(currentUserProfile, updates);
+    showSuccessToast("Data disinkron");
     return true;
   } catch (e) {
-    console.error("❌ Sync gagal:", e);
-    showErrorToast("Gagal sync");
+    showErrorToast("Gagal sinkron");
     return false;
   }
 }
